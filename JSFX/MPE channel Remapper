@@ -1,0 +1,39 @@
+desc:MPE Channel Remapper (Ch1 passthrough, remap 2–16)
+
+slider1:1<1,15,1>Note channels
+
+@init
+  note_ch_count = slider1;
+
+@slider
+  note_ch_count = max(1, min(15, slider1));  // N = 1..15
+  top_ch = 1 + note_ch_count;               // highest output channel
+
+
+@block
+  while (
+    midirecv(offset, msg1, msg23) ?
+    (
+      status = msg1 & 0xF0;
+      ch     = msg1 & 0x0F;   // 0–15 (0 = channel 1)
+
+      // --- ALWAYS pass through channel 1 (global MPE)
+      (ch == 0) ?
+      (
+        midisend(offset, msg1, msg23);
+      ) :
+
+      // --- Remap channels 2–16 → 2..(1+N)
+      (
+        // Convert input channel 2–16 (1..15) to 1..N, using wrap
+        new_ch = ((ch - 1) % note_ch_count) + 1;
+
+        // Shift up so result = 2..(1+N)
+        msg1 = status | new_ch;
+
+        midisend(offset, msg1, msg23);
+      );
+    );
+  );
+
+

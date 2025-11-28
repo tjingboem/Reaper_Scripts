@@ -1,0 +1,137 @@
+desc:Randomize MIDI Channel for Notes
+
+//---------------------------------------------------
+// Sliders (UI shows 1–16)
+//---------------------------------------------------
+slider1:1<1,16,1>Min channel
+slider2:16<1,16,1>Max channel
+slider3:0<0,2,1{Cyclic,Swing,Random}>Mode
+slider4:0<0,1,0.001>Random Seed
+
+//---------------------------------------------------
+@init
+note_stack_size = 8;
+note_stacks = 0;
+
+// cyclic pointer
+cyc_ptr = 0;
+
+// swing
+swing_state = 0;
+swing_dir   = 1;
+
+// RNG
+rand_seed = 0;
+
+
+//---------------------------------------------------
+@slider
+// Convert visible 1–16 back to internal 0–15
+min_ch = slider1 - 1;
+max_ch = slider2 - 1;
+mode   = slider3|0;
+
+rand_seed = slider4;
+
+// Swap if needed
+(min_ch > max_ch) ?
+(
+  temp = min_ch;
+  min_ch = max_ch;
+  max_ch = temp;
+);
+
+
+//---------------------------------------------------
+@block
+while (midirecv(offset, msg1, msg23))
+(
+    status = msg1 & 0xF0;
+    chan   = msg1 & 0x0F;
+
+    note = msg23 & 0x7F;
+    vel  = (msg23 >> 8) & 0x7F;
+
+    stack_base = note * note_stack_size;
+
+    // NOTE ON
+    (status == 0x90 && vel > 0) ?
+    (
+        range = max_ch - min_ch + 1;
+
+        // CYCLIC
+        (mode == 0) ?
+        (
+            new_ch = min_ch + cyc_ptr;
+            cyc_ptr += 1;
+            (cyc_ptr >= range) ? (cyc_ptr = 0);
+        );
+
+        // SWING (Ping-pong)
+        (mode == 1) ?
+        (
+            new_ch = min_ch + swing_state;
+
+            swing_state += swing_dir;
+
+            (swing_state >= range) ?
+            (
+                swing_dir = -1;
+                swing_state = range - 2;
+            );
+
+            (swing_state < 0) ?
+            (
+                swing_dir = 1;
+                swing_state = 1;
+            );
+        );
+
+        // RANDOM
+        (mode == 2) ?
+        (
+            rand_seed = rand_seed * 12.9898 + 0.123;
+            rand_seed = rand_seed - floor(rand_seed);
+            new_ch = min_ch + floor(rand_seed * range);
+        );
+
+        // push onto stack
+        i = 0;
+        while (i < note_stack_size && note_stacks[stack_base + i] > 0)
+        (
+            i += 1;
+        );
+        (i < note_stack_size) ?
+        (
+            note_stacks[stack_base + i] = new_ch + 1;
+        );
+
+        msg1 = 0x90 | new_ch;
+    );
+
+    // NOTE OFF
+    ((status == 0x80) || (status == 0x90 && vel == 0)) ?
+    (
+        j = note_stack_size - 1;
+        new_ch = chan;
+
+        while (j >= 0)
+        (
+            val = note_stacks[stack_base + j];
+            (val > 0) ?
+            (
+                new_ch = val - 1;
+                note_stacks[stack_base + j] = 0;
+                j = -1;
+            ) :
+            (
+                j -= 1;
+            );
+        );
+
+        msg1 = (status & 0xF0) | new_ch;
+    );
+
+    midisend(offset, msg1, msg23);
+);
+

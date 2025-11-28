@@ -1,0 +1,135 @@
+desc:MIDI CC+ Remapper (CC, Aftertouch, Channel Pressure, Pitchbend)
+
+//--------------------------------------------------
+// CC → CC
+slider1:0<0,127,1>CC Input
+slider2:0<0,16,1>CC Input Channel (0=All)
+slider3:1<0,127,1>CC Output
+slider4:0<0,16,1>CC Output Channel (0=Same)
+
+// CC Scaling
+slider5:0<0,127,1>CC Min In
+slider6:127<0,127,1>CC Max In
+slider7:0<0,127,1>CC Min Out
+slider8:127<0,127,1>CC Max Out
+
+//--------------------------------------------------
+// Polyphonic Aftertouch → CC
+slider10:1<0,127,1>PolyAT Output CC
+slider11:0<0,16,1>PolyAT Output Channel (0=Same)
+
+// PolyAT Scaling
+slider12:0<0,127,1>PolyAT Min Out
+slider13:127<0,127,1>PolyAT Max Out
+
+//--------------------------------------------------
+// Channel Pressure → CC
+slider20:2<0,127,1>ChPress Output CC
+slider21:0<0,16,1>ChPress Output Channel (0=Same)
+
+// ChPress Scaling
+slider22:0<0,127,1>ChPress Min Out
+slider23:127<0,127,1>ChPress Max Out
+
+//--------------------------------------------------
+// Pitchbend → CC
+slider30:74<0,127,1>Pitch Output CC
+slider31:0<0,16,1>Pitch Output Channel (0=Same)
+
+// Pitch Scaling (0–16383 → 0–127)
+slider32:0<0,127,1>Pitch Min Out
+slider33:127<0,127,1>Pitch Max Out
+
+//--------------------------------------------------
+
+@block
+while (
+    midirecv(offset, msg1, msg2, msg3) ?
+    (
+        status = msg1 & $xF0;
+        chan   = msg1 & $x0F;
+
+        //---------------------------------------------------------
+        // CC → CC
+        //---------------------------------------------------------
+        status == $xB0 ?
+        (
+            in_cc  = msg2;
+            in_val = msg3;
+
+            match_chan = (slider2 == 0) || (chan+1 == slider2);
+            match_cc   = (in_cc == slider1);
+
+            match_chan && match_cc ?
+            (
+                out_cc   = slider3;
+                out_chan = slider4 == 0 ? chan : slider4-1;
+
+                // inline scaling
+                val = in_val;
+                val = max(min(val, slider6), slider5);
+                scaled = slider7 + (val - slider5) * (slider8 - slider7) / (slider6 - slider5 + 0.00001);
+
+                midisend(offset, $xB0 | out_chan, out_cc, scaled | 0);
+            ) :
+            (
+                midisend(offset, msg1, msg2, msg3);
+            );
+        ) :
+
+        //---------------------------------------------------------
+        // Polyphonic Aftertouch → CC
+        //---------------------------------------------------------
+        status == $xA0 ?
+        (
+            out_cc   = slider10;
+            out_chan = slider11 == 0 ? chan : slider11 - 1;
+
+            val = msg3;
+            val = max(min(val, 127), 0);
+            scaled = slider12 + val * (slider13 - slider12) / 127;
+
+            midisend(offset, $xB0 | out_chan, out_cc, scaled | 0);
+        ) :
+
+        //---------------------------------------------------------
+        // Channel Pressure → CC
+        //---------------------------------------------------------
+        status == $xD0 ?
+        (
+            out_cc   = slider20;
+            out_chan = slider21 == 0 ? chan : slider21 - 1;
+
+            val = msg2;
+            val = max(min(val, 127), 0);
+            scaled = slider22 + val * (slider23 - slider22) / 127;
+
+            midisend(offset, $xB0 | out_chan, out_cc, scaled | 0);
+        ) :
+
+        //---------------------------------------------------------
+        // Pitchbend → CC
+        //---------------------------------------------------------
+        status == $xE0 ?
+        (
+            pb = (msg3 << 7) | msg2;   // 0–16383
+
+            out_cc   = slider30;
+            out_chan = slider31 == 0 ? chan : slider31 - 1;
+
+            val = pb;
+            val = max(min(val, 16383), 0);
+            scaled = slider32 + val * (slider33 - slider32) / 16383;
+
+            midisend(offset, $xB0 | out_chan, out_cc, scaled | 0);
+        ) :
+
+        //---------------------------------------------------------
+        // Everything else passes through
+        //---------------------------------------------------------
+        (
+            midisend(offset, msg1, msg2, msg3);
+        );
+    );
+);
+
