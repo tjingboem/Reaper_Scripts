@@ -1,0 +1,366 @@
+desc:MPE Scaler
+
+// =====================
+// VELOCITY
+// =====================
+slider1:1<0,1,1{OFF,ON}>________________VELOCITY
+slider2:0<0,3,1{Lin,Exp,Log,S}>curve
+slider3:2<0.1,10,0.1>amount
+slider4:1<0,8,0.01>scale
+
+// =====================
+// PRESSURE
+// =====================
+slider5:1<0,1,1{OFF,ON}>_______________PRESSURE
+slider6:0<0,3,1{Lin,Exp,Log,S}>curve
+slider7:2<0.1,10,0.1>amount
+slider8:1<0,8,0.01>scale
+slider9:0<-127,127,1>offset
+
+// =====================
+// CC74 BRIGHTNESS
+// =====================
+slider10:1<0,1,1{OFF,ON}>______________BRIGHTNESS
+slider11:74<0,127,1>CC Number
+slider12:0<0,3,1{Lin,Exp,Log,S}>curve
+slider13:2<0.1,10,0.1>amount
+slider14:1<0,8,0.01>scale
+slider15:0<-127,127,1>offset
+
+// =====================
+// PITCH BEND
+// =====================
+slider16:1<0,1,1{OFF,ON}>_______________PITCH BEND
+slider17:0<0,2048,1>Dead Zone
+slider18:0<0,3,1{Lin,Exp,Log,S}>curve
+slider19:2<0.1,10,0.1>amount
+slider20:1<0,32,0.01>scale
+slider21:0<-8192,8191,1>offset
+
+// =====================
+// GLOBAL
+// =====================
+
+
+@init
+
+LOG_SIZE = 256;
+
+log_head = 0;
+log_count = 0;
+
+log_type_base = 10000;
+log_chan_base = 11000;
+log_in_base   = 12000;
+log_out_base  = 13000;
+log_dt_base   = 14000;
+log_cc_base   = 15000;
+function clamp(v,minv,maxv)(
+    v < minv ? minv :
+    v > maxv ? maxv :
+    v;
+);
+
+function add_log(type, chan, inval, outval, dt, ccnum)
+local(idx)
+(
+  idx = log_head;
+
+  log_type_base[idx] = type;
+  log_chan_base[idx] = chan;
+  log_in_base[idx]   = inval;
+  log_out_base[idx]  = outval;
+  log_dt_base[idx]   = dt;
+  log_cc_base[idx]   = ccnum;
+
+  log_head += 1;
+  log_head >= LOG_SIZE ? log_head = 0;
+
+  log_count < LOG_SIZE ? log_count += 1;
+);
+
+EVENT_VEL  = 0;
+EVENT_PRS  = 1;
+EVENT_CC74 = 2;
+EVENT_BEND = 3;
+
+function logger_event(t,ch,vin,vout,ccnum)
+local(now)(
+  now = time_precise();
+  last_dt = (now - last_time) * 1000;
+  last_time = now;
+
+  event_count += 1;
+  last_type = t;
+  last_chan = ch;
+  last_in   = vin;
+  last_out  = vout;
+
+  add_log(t, ch, vin, vout, last_dt, ccnum);
+);
+
+function apply_curve(v,t,a)
+(
+    v = clamp(v,0,1);
+
+    t == 0 ? v :
+    t == 1 ? pow(v,a) :
+    t == 2 ? (1 - pow(1-v,a)) :
+    (
+        v < 0.5 ?
+            0.5 * pow(v*2,a)
+        :
+            1 - 0.5 * pow((1-v)*2,a)
+    );
+);
+
+function process_uni(val,scale,offs,curve,amt)
+local(v)
+(
+    v = val / 127;
+
+    curve > 0 ?
+        v = apply_curve(v,curve,amt);
+
+    v = v * 127;
+    v = v * scale + offs;
+
+    floor(clamp(v,0,127) + 0.5);
+);
+
+function process_pb(val,scale,offs,curve,amt,dz)
+local(s,v)
+(
+    abs(val) < dz ? val = 0;
+
+    s = val < 0 ? -1 : 1;
+
+    v = abs(val) / 8192;
+
+    curve > 0 ?
+        v = apply_curve(v,curve,amt);
+
+    val = v * 8192 * s;
+
+    val = val * scale + offs;
+
+    floor(clamp(val,-8192,8191));
+);
+
+@slider
+
+// Cached slider values for future logger/activity monitor
+vel_enable = slider1; vel_curve = slider2; vel_amt = slider3; vel_scale = slider4;
+prs_enable = slider5; prs_curve = slider6; prs_amt = slider7; prs_scale = slider8; prs_offset = slider9;
+cc_enable = slider10; cc_num = slider11; cc_curve = slider12; cc_amt = slider13; cc_scale = slider14; cc_offset = slider15;
+pb_enable = slider16; pb_deadzone = slider17; pb_curve = slider18; pb_amt = slider19; pb_scale = slider20; pb_offset = slider21;
+
+@block
+
+while(midirecv(offset,msg1,msg23))
+(
+    status = msg1 & $xF0;
+
+    // Velocity
+    status == $x90 ?
+    (
+        note = msg23 & $x7F;
+        vel  = (msg23 >> 8) & $x7F;
+
+        vel > 0 && slider1 ?
+        (
+            vel_in = vel;
+
+            vel = process_uni(
+                    vel,
+                    slider4,
+                    0,
+                    slider2,
+                    slider3
+                  );
+
+            msg23 = note | (vel << 8);
+
+            logger_event(EVENT_VEL, (msg1 & 15) + 1, vel_in, vel, 0);
+        );
+    );
+
+    // Channel Pressure
+    status == $xD0 && slider5 ?
+    (
+        p = msg23 & $x7F;
+        p_in = p;
+
+        p = process_uni(
+                p,
+                slider8,
+                slider9,
+                slider6,
+                slider7
+            );
+
+        msg23 = p;
+
+        logger_event(EVENT_PRS, (msg1 & 15) + 1, p_in, p, 0);
+    );
+
+    // CC74
+    status == $xB0 ?
+    (
+        cc  = msg23 & $x7F;
+        val = (msg23 >> 8) & $x7F;
+
+        cc == 74 && slider10 ?
+        (
+            val_in = val;
+
+            val = process_uni(
+                    val,
+                    slider14,
+                    slider15,
+                    slider12,
+                    slider13
+                  );
+
+            cc_out = slider11;
+            msg23 = cc_out | (val << 8);
+
+            logger_event(EVENT_CC74, (msg1 & 15) + 1, val_in, val, cc_out);
+        );
+    );
+
+    // Pitch Bend
+    status == $xE0 && slider16 ?
+    (
+        lsb = msg23 & $x7F;
+        msb = (msg23 >> 8) & $x7F;
+
+        pb = (msb << 7) | lsb;
+        pb -= 8192;
+        pb_in = pb;
+
+        pb = process_pb(
+                pb,
+                slider20,
+                slider21,
+                slider18,
+                slider19,
+                slider17
+             );
+
+        logger_event(EVENT_BEND, (msg1 & 15) + 1, pb_in, pb, 0);
+
+        pb += 8192;
+        pb = clamp(pb,0,16383);
+
+        lsb = pb & $x7F;
+        msb = (pb >> 7) & $x7F;
+
+        msg23 = lsb | (msb << 8);
+    );
+
+    midisend(offset,msg1,msg23);
+);
+
+
+@gfx 1180 420
+
+gfx_setfont(1, "Arial", 13);
+
+gfx_set(1,1,1);
+
+gfx_x = 10; gfx_y = 10;
+
+top_y = gfx_y;
+row_h = 13;
+
+num_blocks = 3;
+block_w = 390;
+
+// Column layout within each block (offsets relative to block's left edge)
+off_dt    = 0;
+off_ch    = 70;
+off_type  = 145;
+off_old   = 250;
+off_new   = 310;
+
+rows_per_block = 30;
+visible = min(rows_per_block * num_blocks, log_count);
+
+// grey vertical dividers between blocks
+divider_top    = top_y - 4;
+divider_bottom = top_y + rows_per_block * row_h;
+
+gfx_r = 0.4; gfx_g = 0.4; gfx_b = 0.4; gfx_a = 1;
+blk_div = 1;
+loop(num_blocks - 1,
+(
+  div_x = 10 + blk_div * block_w - 15;
+  gfx_line(div_x, divider_top, div_x, divider_bottom);
+  blk_div += 1;
+);
+);
+
+i = 0;
+
+loop(visible,
+(
+  idx = log_head - 1 - i;
+  idx < 0 ? idx += LOG_SIZE;
+
+  type   = log_type_base[idx];
+  chan   = log_chan_base[idx];
+  inval  = log_in_base[idx];
+  outval = log_out_base[idx];
+  dt     = log_dt_base[idx];
+  ccnum  = log_cc_base[idx];
+
+  // which block (0 = leftmost ... num_blocks-1 = rightmost) and row within block
+  blk     = floor(i / rows_per_block);
+  row_idx = i - blk * rows_per_block;
+
+  block_x0 = 10 + blk * block_w;
+  row_y    = top_y + row_idx * row_h;
+
+  // per-controller color + label
+  type == EVENT_VEL ? (
+    label = "Velocity";
+    col_r=0.40; col_g=0.75; col_b=1.00;
+  ) : type == EVENT_PRS ? (
+    label = "Pressure";
+    col_r=1.00; col_g=0.55; col_b=0.30;
+  ) : type == EVENT_CC74 ? (
+    label = ccnum == 74 ? "CC74" : sprintf(#cc_label, "CC74 -> CC%d", ccnum);
+    col_r=0.55; col_g=1.00; col_b=0.45;
+  ) : (
+    label = "Pitch Bend";
+    col_r=1.00; col_g=0.40; col_b=0.85;
+  );
+
+  row_alpha = 1 - 0.45 * (i / (visible - 1 + (visible == 1)));
+
+  gfx_a = row_alpha;
+  gfx_r = col_r; gfx_g = col_g; gfx_b = col_b;
+
+  gfx_x = block_x0 + off_dt;   gfx_y = row_y;
+  gfx_printf("+%dms", dt);
+
+  gfx_x = block_x0 + off_ch;   gfx_y = row_y;
+  gfx_printf("CH%02d", chan);
+
+  gfx_x = block_x0 + off_type; gfx_y = row_y;
+  gfx_printf("%s", label);
+
+  // old value: light grey
+  gfx_r = 0.6; gfx_g = 0.6; gfx_b = 0.6; gfx_a = row_alpha;
+  gfx_x = block_x0 + off_old; gfx_y = row_y;
+  gfx_printf("%d", inval);
+
+  // new value: controller color
+  gfx_r = col_r; gfx_g = col_g; gfx_b = col_b; gfx_a = row_alpha;
+  gfx_x = block_x0 + off_new; gfx_y = row_y;
+  gfx_printf("%d", outval);
+
+  i += 1;
+);
+);

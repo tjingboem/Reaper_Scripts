@@ -32,6 +32,16 @@ same idea (channel diversification for multi-timbral triggering, not
 expression isolation), applied here to live MIDI input generally rather
 than a captured buffer.
 
+**MPE Scaler** — reshapes MPE expression data (Note-On Velocity,
+Channel Pressure, CC74 Brightness, Pitch Bend) through independent
+per-parameter response curves (Linear/Exponential/Logarithmic/S-curve),
+each with its own amount/scale/offset and, for pitch bend, a
+configurable dead zone. Includes a live scrolling event log (`@gfx`)
+showing the last ~90 messages across three columns, color-coded by
+parameter type, with old→new values and inter-event timing — useful
+for seeing exactly what a curve is doing to real incoming gestures, not
+just guessing from the knob position.
+
 **test** — empty placeholder, not a real script.
 
 ## Lua
